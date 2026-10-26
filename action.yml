@@ -1,0 +1,118 @@
+name: Rust line coverage
+description: >-
+  Measure Rust line coverage with cargo llvm-cov and gate it on the merged lcov
+  DA records, so one source line can never be counted as uncovered twice.
+author: Dorival Pedroso
+branding:
+  icon: percent
+  color: green
+
+inputs:
+  args:
+    description: >-
+      Extra arguments for `cargo llvm-cov`, e.g. "--workspace --features umfpack".
+      Split on whitespace, so do not put spaces inside an argument; use the
+      ignore-filename-regex input rather than passing that flag here.
+    required: false
+    default: --workspace
+  ignore-filename-regex:
+    description: >-
+      Regex of source files to leave out of the report, forwarded to
+      `cargo llvm-cov --ignore-filename-regex`. Empty means no exclusion.
+    required: false
+    default: ""
+  lcov-path:
+    description: Where the lcov report is written.
+    required: false
+    default: lcov.info
+  min-lines:
+    description: >-
+      Minimum line coverage percentage, each source line counted once.
+      0 disables the gate and only reports.
+    required: false
+    default: "0"
+  version:
+    description: >-
+      cargo-llvm-cov version to install, e.g. "0.9.1", or "latest".
+    required: false
+    default: "latest"
+  upload:
+    description: Upload the lcov report as a workflow artifact when "true".
+    required: false
+    default: "false"
+  artifact-name:
+    description: Artifact name used when upload is "true".
+    required: false
+    default: lcov
+
+outputs:
+  covered:
+    description: Source lines covered, each counted once.
+    value: ${{ steps.check.outputs.covered }}
+  total:
+    description: Source lines measured.
+    value: ${{ steps.check.outputs.total }}
+  percentage:
+    description: Line coverage percentage, two decimals.
+    value: ${{ steps.check.outputs.percentage }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install cargo-llvm-cov (${{ inputs.version }})
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        case "$(uname -s)-$(uname -m)" in
+          Linux-x86_64)  target=x86_64-unknown-linux-gnu ;;
+          Linux-aarch64) target=aarch64-unknown-linux-gnu ;;
+          Darwin-x86_64) target=x86_64-apple-darwin ;;
+          Darwin-arm64)  target=aarch64-apple-darwin ;;
+          *)
+            echo "::error::no prebuilt cargo-llvm-cov for $(uname -s)-$(uname -m); install it with 'cargo install cargo-llvm-cov' and drop the 'version' input"
+            exit 1
+            ;;
+        esac
+        if [ "$VERSION" = latest ]; then
+          url="https://github.com/taiki-e/cargo-llvm-cov/releases/latest/download/cargo-llvm-cov-${target}.tar.gz"
+        else
+          url="https://github.com/taiki-e/cargo-llvm-cov/releases/download/v${VERSION}/cargo-llvm-cov-${target}.tar.gz"
+        fi
+        mkdir -p "$HOME/.cargo/bin"
+        curl -LsSf "$url" | tar xzf - -C "$HOME/.cargo/bin"
+        # llvm-cov needs the LLVM tools from the toolchain in use; rustup provides
+        # them and treats the request as a no-op when they are already installed.
+        if command -v rustup >/dev/null 2>&1; then
+          rustup component add llvm-tools-preview
+        fi
+    - name: Measure coverage
+      shell: bash
+      env:
+        ARGS: ${{ inputs.args }}
+        IGNORE: ${{ inputs.ignore-filename-regex }}
+        LCOV: ${{ inputs.lcov-path }}
+      run: |
+        set -euo pipefail
+        # $ARGS is deliberately split on whitespace; the regex goes through its own
+        # variable so a '|' in it cannot be mistaken for a shell pipe.
+        flags=()
+        if [ -n "$IGNORE" ]; then
+          flags=(--ignore-filename-regex "$IGNORE")
+        fi
+        cargo llvm-cov $ARGS "${flags[@]}" --lcov --output-path "$LCOV"
+    - name: Check line coverage
+      id: check
+      shell: bash
+      env:
+        LCOV: ${{ inputs.lcov-path }}
+        MIN: ${{ inputs.min-lines }}
+      run: bash "${{ github.action_path }}/check-coverage.bash" "$LCOV" "$MIN"
+    - name: Upload the lcov report
+      if: inputs.upload == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.lcov-path }}
+        if-no-files-found: error
