@@ -1,0 +1,42 @@
+name: Self test
+# The action has to be proven before a repository depends on it, and the two
+# things worth proving are the two outcomes: a report with outputs, and a gate
+# that actually fails.
+on: [push, pull_request]
+jobs:
+  reports:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Measure the fixture
+        id: cov
+        uses: ./
+        with:
+          args: --manifest-path selftest/Cargo.toml --lib
+          lcov-path: selftest.info
+          min-lines: 50
+      - name: The outputs carry the numbers the gate used
+        run: |
+          echo "coverage: ${{ steps.cov.outputs.covered }}/${{ steps.cov.outputs.total }} = ${{ steps.cov.outputs.percentage }}%"
+          test -n "${{ steps.cov.outputs.percentage }}"
+          test "${{ steps.cov.outputs.total }}" -gt 0
+
+  gate-fails:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Demand 100% of a fixture with an uncovered line
+        id: cov
+        continue-on-error: true
+        uses: ./
+        with:
+          args: --manifest-path selftest/Cargo.toml --lib
+          lcov-path: selftest.info
+          min-lines: 100
+      - name: The step must have failed
+        if: steps.cov.outcome != 'failure'
+        run: |
+          echo "::error::the gate passed at min-lines 100 on a fixture with an uncovered line"
+          exit 1
